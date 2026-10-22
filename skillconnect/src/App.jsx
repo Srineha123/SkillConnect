@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
-import { GOALS, RESOURCES, JOBS, QUIZ } from './data.js'
+import { GOALS, RESOURCES, JOBS, QUIZ, QUIZ_TECHNOLOGIES } from './data.js'
 
 /* ---------- helpers ---------- */
 function useLocalStorage(key, initial) {
@@ -118,6 +118,15 @@ function Home({ go, pickGoal }) {
 /* ---------- Skills ---------- */
 function Skills({ goal, setGoal, go, setLearnGoal }) {
   const g = goalById(goal)
+  const [roadmapProgress, setRoadmapProgress] = useLocalStorage('sc_roadmap_progress', {})
+  const completedSteps = roadmapProgress[goal] || []
+  const toggleStep = (index) => {
+    const next = completedSteps.includes(index)
+      ? completedSteps.filter((step) => step !== index)
+      : [...completedSteps, index]
+    setRoadmapProgress({ ...roadmapProgress, [goal]: next })
+  }
+  const progressPercent = g ? Math.round((completedSteps.length / g.roadmap.length) * 100) : 0
   return (
     <section className="section container">
       <SectionHead eyebrow="Skill recommendations" title="Choose your career goal"
@@ -139,11 +148,18 @@ function Skills({ goal, setGoal, go, setLearnGoal }) {
           <p className="muted">{g.blurb}</p>
           <h3 className="sub">Key skills to build</h3>
           <div className="chips">{g.skills.map((s) => <span className="chip" key={s}>{s}</span>)}</div>
-          <h3 className="sub">Your learning roadmap</h3>
+          <div className="roadmap-heading">
+            <h3 className="sub">Your learning roadmap</h3>
+            <strong>{progressPercent}% complete</strong>
+          </div>
+          <div className="progress roadmap-progress"><div style={{ width: `${progressPercent}%` }} /></div>
+          <p className="muted roadmap-help">Tick each step as you complete it. Your progress is saved in this browser.</p>
           <ol className="roadmap">
             {g.roadmap.map((s, i) => (
-              <li key={s.t}>
-                <span className="step-num">{i + 1}</span>
+              <li className={completedSteps.includes(i) ? 'roadmap-done' : ''} key={s.t}>
+                <label className="roadmap-check">
+                  <input type="checkbox" checked={completedSteps.includes(i)} onChange={() => toggleStep(i)} />
+                </label>
                 <div><strong>{s.t}</strong><p>{s.d}</p></div>
               </li>
             ))}
@@ -201,10 +217,25 @@ function Learn({ learnGoal, setLearnGoal }) {
 
 /* ---------- Quiz ---------- */
 function Quiz({ go, setLearnGoal }) {
+  const [technology, setTechnology] = useState('All technologies')
+  const makeQuestionSet = (selected = technology) => {
+    const pool = selected === 'All technologies'
+      ? QUIZ
+      : QUIZ.filter((question) => question.technology === selected)
+    return [...pool].sort(() => Math.random() - 0.5).slice(0, Math.min(15, pool.length))
+  }
+  const [questions, setQuestions] = useState(() => makeQuestionSet('All technologies'))
   const [idx, setIdx] = useState(0)
   const [answers, setAnswers] = useState([])
   const [picked, setPicked] = useState(null)
-  const done = answers.length === QUIZ.length
+  const done = answers.length === questions.length
+  const changeTechnology = (value) => {
+    setTechnology(value)
+    setQuestions(makeQuestionSet(value))
+    setIdx(0)
+    setAnswers([])
+    setPicked(null)
+  }
 
   const next = () => {
     if (picked === null) return
@@ -212,15 +243,27 @@ function Quiz({ go, setLearnGoal }) {
     setPicked(null)
     setIdx(idx + 1)
   }
-  const restart = () => { setIdx(0); setAnswers([]); setPicked(null) }
+  const restart = () => {
+    setQuestions(makeQuestionSet(technology))
+    setIdx(0)
+    setAnswers([])
+    setPicked(null)
+  }
 
   if (!done) {
-    const q = QUIZ[idx]
+    const q = questions[idx]
     return (
       <section className="section container narrow">
-        <SectionHead eyebrow="Skill assessment" title="Test your skills" text={`Question ${idx + 1} of ${QUIZ.length}`} />
-        <div className="progress"><div style={{ width: `${(idx / QUIZ.length) * 100}%` }} /></div>
+        <SectionHead eyebrow="Skill assessment" title="Test your skills" text={`Question ${idx + 1} of ${questions.length} · Choose a technology to practise a specific skill`} />
+        <div className="filters quiz-technology-filter">
+          <label htmlFor="quiz-technology">Choose a technology</label>
+          <select id="quiz-technology" value={technology} onChange={(e) => changeTechnology(e.target.value)}>
+            {QUIZ_TECHNOLOGIES.map((name) => <option key={name} value={name}>{name}</option>)}
+          </select>
+        </div>
+        <div className="progress"><div style={{ width: `${(idx / questions.length) * 100}%` }} /></div>
         <div className="card quiz-card">
+          <div className="quiz-meta"><span className="tag">{q.technology || goalById(q.topic)?.name || 'General skills'}</span><span className="muted">{questions.length}-question assessment</span></div>
           <h3>{q.q}</h3>
           <div className="options">
             {q.o.map((opt, i) => (
@@ -230,7 +273,7 @@ function Quiz({ go, setLearnGoal }) {
             ))}
           </div>
           <button className="btn btn-primary" disabled={picked === null} onClick={next}>
-            {idx === QUIZ.length - 1 ? 'Finish quiz' : 'Next question'}
+            {idx === questions.length - 1 ? 'Finish assessment' : 'Next question'}
           </button>
           {picked === null && <p className="hint">Select an answer to continue.</p>}
         </div>
@@ -238,113 +281,165 @@ function Quiz({ go, setLearnGoal }) {
     )
   }
 
-  const score = answers.filter((a, i) => a === QUIZ[i].a).length
-  const pct = Math.round((score / QUIZ.length) * 100)
+  const score = answers.filter((a, i) => a === questions[i].a).length
+  const pct = Math.round((score / questions.length) * 100)
   const level = pct >= 80 ? 'Advanced' : pct >= 50 ? 'Intermediate' : 'Beginner'
-  const weak = [...new Set(QUIZ.filter((q, i) => answers[i] !== q.a).map((q) => q.topic))]
+  const topicResults = GOALS.map((g) => {
+    const indexes = questions.map((q, i) => q.topic === g.id ? i : -1).filter((i) => i >= 0)
+    const correct = indexes.filter((i) => answers[i] === questions[i].a).length
+    return { ...g, total: indexes.length, correct, pct: indexes.length ? Math.round((correct / indexes.length) * 100) : null }
+  }).filter((g) => g.total > 0)
+  const weak = topicResults.filter((g) => g.pct < 70)
   return (
     <section className="section container narrow">
-      <SectionHead eyebrow="Your result" title="Assessment complete" />
+      <SectionHead eyebrow="Your results" title="Assessment complete" text={`Technology: ${technology}. Review your score and use the topic breakdown to decide what to practise next.`} />
+      <div className="filters quiz-technology-filter">
+        <label htmlFor="quiz-technology-results">Try another technology</label>
+        <select id="quiz-technology-results" value={technology} onChange={(e) => changeTechnology(e.target.value)}>
+          {QUIZ_TECHNOLOGIES.map((name) => <option key={name} value={name}>{name}</option>)}
+        </select>
+      </div>
       <div className="card score-card">
-        <div className="score-circle"><strong>{score}/{QUIZ.length}</strong><span>{pct}%</span></div>
-        <h3>Level: {level}</h3>
-        {weak.length === 0 ? (
-          <p>Excellent! You answered everything correctly. Explore opportunities that match your skills.</p>
-        ) : (
-          <>
-            <p>Suggested areas to improve:</p>
-            <div className="chips center">
-              {weak.map((w) => (
-                <button key={w} className="chip chip-btn" onClick={() => { setLearnGoal(w); go('learn') }}>
-                  {goalById(w).icon} {goalById(w).name}
-                </button>
-              ))}
+        <div className="score-circle"><strong>{score}/{questions.length}</strong><span>{pct}%</span></div>
+        <h3>Current level: {level}</h3>
+        <p>{pct >= 80 ? 'Great work! Keep practising to maintain your progress.' : 'Use the recommendations below to strengthen your skills and try again.'}</p>
+        <h3 className="sub">Topic performance</h3>
+        <div className="topic-results">
+          {topicResults.map((g) => (
+            <div className="topic-result" key={g.id}>
+              <div><span>{g.icon} {g.name}</span><strong>{g.correct}/{g.total} · {g.pct}%</strong></div>
+              <div className="progress"><div style={{ width: `${g.pct}%` }} /></div>
             </div>
-            <p className="hint">Click an area to see free learning resources.</p>
-          </>
-        )}
+          ))}
+        </div>
+        {weak.length > 0 && <>
+          <h3 className="sub">Recommended next steps</h3>
+          <p className="muted">Focus on these areas to improve your result.</p>
+          <div className="chips center">
+            {weak.map((w) => <button key={w.id} className="chip chip-btn" onClick={() => { setLearnGoal(w.id); go('learn') }}>{w.icon} Explore {w.name}</button>)}
+          </div>
+        </>}
         <div className="review">
-          {QUIZ.map((q, i) => (
+          {questions.map((q, i) => (
             <div key={i} className={'review-row ' + (answers[i] === q.a ? 'ok' : 'bad')}>
               <span>{answers[i] === q.a ? '✔' : '✘'}</span>
               <div>
                 <strong>{q.q}</strong>
-                {answers[i] !== q.a && <small>Correct answer: {q.o[q.a]}</small>}
+                {answers[i] !== q.a && <small>Your answer: {q.o[answers[i]]} · Correct answer: {q.o[q.a]}</small>}
+                <small>{q.explanation || `Topic: ${goalById(q.topic)?.name || 'General skills'}`}</small>
               </div>
             </div>
           ))}
         </div>
-        <button className="btn btn-primary" onClick={restart}>Retake quiz</button>
+        <button className="btn btn-primary" onClick={restart}>Try a new set of questions</button>
       </div>
     </section>
   )
 }
 
-/* ---------- Jobs ---------- */
+/* ---------- Opportunities ---------- */
 function Jobs({ bookmarks, setBookmarks }) {
   const [q, setQ] = useState('')
   const [type, setType] = useState('all')
   const [goal, setGoal] = useState('all')
   const [loc, setLoc] = useState('all')
-  const [savedOnly, setSavedOnly] = useState(false)
-  const locations = useMemo(() => [...new Set(JOBS.map((j) => j.location))], [])
+  const locations = useMemo(() => [...new Set(JOBS.map((item) => item.location))], [])
 
-  const list = JOBS.filter((j) => {
-    const text = (j.role + ' ' + j.company + ' ' + j.skills.join(' ')).toLowerCase()
-    return text.includes(q.trim().toLowerCase()) &&
-      (type === 'all' || j.type === type) &&
-      (goal === 'all' || j.goal === goal) &&
-      (loc === 'all' || j.location === loc) &&
-      (!savedOnly || bookmarks.includes(j.id))
+  const list = JOBS.filter((item) => {
+    const searchText = [
+      item.role,
+      item.company,
+      item.location,
+      item.description,
+      ...item.skills,
+    ].join(' ').toLowerCase()
+
+    return searchText.includes(q.trim().toLowerCase()) &&
+      (type === 'all' || item.type === type) &&
+      (goal === 'all' || item.goal === goal) &&
+      (loc === 'all' || item.location === loc)
   })
-  const toggle = (id) => setBookmarks(bookmarks.includes(id) ? bookmarks.filter((b) => b !== id) : [...bookmarks, id])
-  const reset = () => { setQ(''); setType('all'); setGoal('all'); setLoc('all'); setSavedOnly(false) }
+
+  const toggle = (id) => setBookmarks(
+    bookmarks.includes(id)
+      ? bookmarks.filter((itemId) => itemId !== id)
+      : [...bookmarks, id]
+  )
+  const reset = () => { setQ(''); setType('all'); setGoal('all'); setLoc('all') }
 
   return (
     <section className="section container">
-      <SectionHead eyebrow="Jobs & internships" title="Find opportunities that match your skills" />
-      <div className="notice">⚠️ <strong>Demo data:</strong> these are sample opportunities with fictional companies. They are not real vacancies and you cannot apply here.</div>
+      <SectionHead
+        eyebrow="Career hub"
+        title="Discover Opportunities"
+        text="Explore trusted platforms for internships, jobs, research programs and career opportunities. Visit the original source to check current openings and apply."
+      />
+
       <div className="filters">
-        <input type="search" placeholder="Search role, company or skill…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search opportunities" />
-        <select value={type} onChange={(e) => setType(e.target.value)} aria-label="Type">
-          <option value="all">All types</option><option>Internship</option><option>Job</option>
+        <input
+          type="search"
+          placeholder="Search websites, skills or opportunities…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          aria-label="Search opportunity sources"
+        />
+        <select value={type} onChange={(e) => setType(e.target.value)} aria-label="Opportunity type">
+          <option value="all">All opportunities</option>
+          <option value="Internship">Internships</option>
+          <option value="Job">Jobs & careers</option>
         </select>
-        <select value={goal} onChange={(e) => setGoal(e.target.value)} aria-label="Field">
+        <select value={goal} onChange={(e) => setGoal(e.target.value)} aria-label="Career field">
           <option value="all">All fields</option>
           {GOALS.map((g) => <option key={g.id} value={g.id}>{g.name}</option>)}
         </select>
         <select value={loc} onChange={(e) => setLoc(e.target.value)} aria-label="Location">
           <option value="all">All locations</option>
-          {locations.map((l) => <option key={l}>{l}</option>)}
+          {locations.map((location) => <option key={location} value={location}>{location}</option>)}
         </select>
-        <label className="check"><input type="checkbox" checked={savedOnly} onChange={(e) => setSavedOnly(e.target.checked)} /> Saved only ({bookmarks.length})</label>
       </div>
-      <p className="muted count">{list.length} opportunit{list.length === 1 ? 'y' : 'ies'} shown</p>
+
+      <p className="muted count">{list.length} source{list.length === 1 ? '' : 's'} found</p>
+
       {list.length === 0 ? (
-        <Empty title="No opportunities match" text={savedOnly && bookmarks.length === 0 ? 'You have not bookmarked anything yet.' : 'Try changing your search or filters.'}
-          action={<button className="btn btn-outline" onClick={reset}>Clear filters</button>} />
+        <Empty
+          title="No sources found"
+          text="Try another keyword or change your filters."
+          action={<button className="btn btn-outline" onClick={reset}>Clear filters</button>}
+        />
       ) : (
         <div className="grid grid-2">
-          {list.map((j) => {
-            const saved = bookmarks.includes(j.id)
+          {list.map((item) => {
+            const saved = bookmarks.includes(item.id)
             return (
-              <div className="card hover job" key={j.id}>
+              <article className="card hover job source-card" key={item.id}>
                 <div className="card-top">
-                  <span className={'tag ' + (j.type === 'Job' ? 'job-tag' : 'intern')}>{j.type}</span>
-                  <span className="tag demo">Demo</span>
-                  <button className={'bookmark' + (saved ? ' on' : '')} onClick={() => toggle(j.id)} aria-label={saved ? 'Remove bookmark' : 'Bookmark'} title={saved ? 'Remove bookmark' : 'Bookmark'}>
-                    {saved ? '★' : '☆'}
-                  </button>
+                  <span className={'tag ' + (item.type === 'Job' ? 'job-tag' : 'intern')}>
+                    {item.type === 'Job' ? 'Jobs & Careers' : 'Internships'}
+                  </span>
+                  <button
+                    className={'bookmark' + (saved ? ' on' : '')}
+                    onClick={() => toggle(item.id)}
+                    aria-label={saved ? 'Remove bookmark' : 'Save source'}
+                    title={saved ? 'Remove bookmark' : 'Save source'}
+                  >{saved ? '★' : '☆'}</button>
                 </div>
-                <h3>{j.role}</h3>
-                <p className="muted">{j.company} · 📍 {j.location}</p>
-                <div className="chips">{j.skills.map((s) => <span className="chip small" key={s}>{s}</span>)}</div>
-                <p className="elig"><strong>Eligibility:</strong> {j.elig}</p>
-              </div>
+                <h3>{item.company}</h3>
+                <p><strong>{item.role}</strong></p>
+                <p className="muted">📍 {item.location}</p>
+                <p>{item.description}</p>
+                <div className="chips">
+                  {item.skills.map((skill) => <span className="chip small" key={skill}>{skill}</span>)}
+                </div>
+                <p className="elig"><strong>Eligibility:</strong> {item.elig}</p>
+                <a className="btn btn-primary source-link" href={item.url} target="_blank" rel="noopener noreferrer">
+                  Visit Website <span aria-hidden="true">↗</span>
+                </a>
+              </article>
             )
           })}
         </div>
       )}
+      <p className="source-note">SkillConnect links to external platforms. Availability, eligibility and application details are managed by each source.</p>
     </section>
   )
 }
@@ -416,6 +511,24 @@ function Profile({ profile, setProfile }) {
         <button className="btn btn-outline" onClick={() => { setForm(profile); setEditing(true) }}>Edit profile</button>
         <button className="btn btn-primary" onClick={() => window.print()}>Print / Save as PDF</button>
       </div>
+      {(() => {
+        const checks = [
+          ['Name', Boolean(profile.name?.trim())],
+          ['Email', Boolean(profile.email?.trim())],
+          ['Education', Boolean(profile.college?.trim() && profile.degree?.trim())],
+          ['Career goal', Boolean(profile.goal)],
+          ['Skills', Boolean(profile.skills?.split(',').some((skill) => skill.trim()))],
+        ]
+        const readiness = Math.round((checks.filter((item) => item[1]).length / checks.length) * 100)
+        return (
+          <div className="card readiness-card">
+            <div className="readiness-top"><div><span className="eyebrow">Resume check</span><h3>Profile readiness</h3></div><strong>{readiness}%</strong></div>
+            <div className="progress"><div style={{ width: `${readiness}%` }} /></div>
+            <div className="readiness-checks">{checks.map(([label, complete]) => <span className={complete ? 'ready' : 'missing'} key={label}>{complete ? '✓' : '○'} {label}</span>)}</div>
+            <p className="muted">Complete these basics before applying. This checks profile completeness, not the quality of your resume.</p>
+          </div>
+        )
+      })()}
       <div id="resume" className="card resume">
         <h2>{profile.name}</h2>
         <p className="muted">{profile.email}</p>
@@ -477,7 +590,7 @@ export default function App() {
             {PAGES.map(([id, label]) => <button key={id} onClick={() => go(id)}>{label}</button>)}
           </div>
         </div>
-        <div className="container copy">Team C-4 · Frontend demo with sample data. No real AI, accounts or live job listings.</div>
+        <div className="container copy">© 2026 SkillConnect · Team C-4 · Learn, Build and Connect. <span>Opportunity information is provided by external platforms.</span></div>
       </footer>
     </div>
   )
